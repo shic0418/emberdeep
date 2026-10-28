@@ -20,6 +20,7 @@ var player: Player
 
 func _ready() -> void:
 	assert(layout != null, "Level needs a LevelLayout")
+	GameState.cancel_hit_stop()  # a reload must always start at normal speed
 	renderer.layout = layout
 	renderer.queue_redraw()
 	TerrainBuilder.build(layout, $Terrain)

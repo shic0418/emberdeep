@@ -39,6 +39,14 @@ func _ready() -> void:
 	await _run("one_way_platform", test_one_way_platform)
 	await _run("attack_hits_once_and_kills", test_attack_hits_once_and_kills)
 	await _run("up_attack", test_up_attack)
+	await _run("down_strike_hits_and_bounces", test_down_strike_hits_and_bounces)
+	await _run("down_strike_from_full_fall", test_down_strike_from_full_fall)
+	await _run("down_strike_miss_no_bounce", test_down_strike_miss_no_bounce)
+	await _run("down_strike_hits_once_per_activation", test_down_strike_hits_once_per_activation)
+	await _run("down_attack_on_ground_is_forward", test_down_attack_on_ground_is_forward)
+	await _run("pogo_does_not_refund_air_dash", test_pogo_does_not_refund_air_dash)
+	await _run("hit_stop_restores_timing", test_hit_stop_restores_timing)
+	await _run("hit_stop_cleared_by_pause_and_reload", test_hit_stop_cleared_by_pause_and_reload)
 	await _run("contact_damage_knockback_iframes", test_contact_damage_knockback_iframes)
 	await _run("spikes_respawn_to_safe_ground", test_spikes_respawn_to_safe_ground)
 	await _run("player_death", test_player_death)
@@ -76,6 +84,7 @@ func _run(test_name: String, test: Callable) -> void:
 		Input.action_release(action)
 	_arena.queue_free()
 	get_tree().paused = false
+	GameState.cancel_hit_stop()
 	await get_tree().physics_frame
 	await get_tree().physics_frame
 	print(("FAIL " if _test_failed else "PASS ") + test_name)
@@ -128,6 +137,24 @@ func spawn_passive_enemy(pos: Vector2) -> Gloomshell:
 	enemy.detection_range = 0.0
 	_arena.add_child(enemy)
 	return enemy
+
+
+func count_bursts() -> int:
+	return _arena.get_children().filter(func(n): return n is ImpactBurst).size()
+
+
+## Presses Down + Attack, then follows the player for count frames.
+## Returns the most upward (most negative) vertical speed seen.
+func down_strike(player: Player, count: int) -> float:
+	press("move_down")
+	press("attack")
+	var min_vy := player.velocity.y
+	for i in count:
+		await get_tree().physics_frame
+		min_vy = minf(min_vy, player.velocity.y)
+	release("attack")
+	release("move_down")
+	return min_vy
 
 
 func make_layout(map: String) -> LevelLayout:
@@ -367,7 +394,7 @@ func test_attack_hits_once_and_kills() -> void:
 	await frames(10)
 	check(enemy.health.current == 2, "one swing hits only once")
 	for i in 2:
-		await frames(15)
+		await frames(20)  # cooldown runs in game time, which hit-stop slows
 		enemy.position = player.position + Vector2(26, 0)
 		await frames(1)
 		press("attack")
@@ -390,6 +417,163 @@ func test_up_attack() -> void:
 	await frames(3)
 	check(player.attack_direction == Vector2.UP, "attack aimed up")
 	check(enemy.health.current == 2, "upward strike lands (hp=%d)" % enemy.health.current)
+
+
+func test_down_strike_hits_and_bounces() -> void:
+	add_floor()
+	var enemy := spawn_passive_enemy(Vector2.ZERO)
+	var player := spawn_player(Vector2(0, -24))
+	var min_vy := await down_strike(player, 4)
+	check(player.attack_direction == Vector2.DOWN, "attack aimed down")
+	check(enemy.health.current == 2, "down strike lands (hp=%d)" % enemy.health.current)
+	check(min_vy <= -player.pogo_bounce_speed * 0.95, "bounced upward (min vy=%.1f)" % min_vy)
+	check(player.health.current == 5, "bounce kept the player clear of contact damage")
+	check(count_bursts() == 1, "one impact burst spawned (%d)" % count_bursts())
+	await frames(40)
+	check(count_bursts() == 0, "impact burst freed itself")
+
+
+func test_down_strike_from_full_fall() -> void:
+	add_floor()
+	var enemy := spawn_passive_enemy(Vector2.ZERO)
+	var player := spawn_player(Vector2(0, -220))
+	# Strike a few frames before the body would reach the enemy's contact box.
+	for i in 120:
+		await get_tree().physics_frame
+		if player.position.y > -64.0:
+			break
+	check(player.velocity.y >= player.max_fall_speed * 0.9, "falling fast (vy=%.1f)" % player.velocity.y)
+	var min_vy := await down_strike(player, 6)
+	check(enemy.health.current == 2, "strike lands mid-fall (hp=%d)" % enemy.health.current)
+	check(min_vy <= -player.pogo_bounce_speed * 0.95, "bounced (min vy=%.1f)" % min_vy)
+	check(player.health.current == 5, "strike beat the contact damage (hp=%d)" % player.health.current)
+
+
+func test_down_strike_miss_no_bounce() -> void:
+	add_floor()
+	var player := spawn_player(Vector2(0, -80))
+	var min_vy := await down_strike(player, 10)
+	check(player.attack_direction == Vector2.DOWN, "attack aimed down")
+	check(min_vy >= 0.0, "no bounce on a miss (min vy=%.1f)" % min_vy)
+	check(not GameState.is_hit_stopped() and Engine.time_scale == 1.0, "no hit-stop on a miss")
+	check(count_bursts() == 0, "no impact effect on a miss")
+
+
+func test_down_strike_hits_once_per_activation() -> void:
+	add_floor()
+	var enemy := spawn_passive_enemy(Vector2.ZERO)
+	var player := spawn_player(Vector2(0, -24))
+	await down_strike(player, 4)
+	check(enemy.health.current == 2, "first strike lands (hp=%d)" % enemy.health.current)
+	check(player.is_attacking(), "activation still live for the overlap check")
+	# Hold the player over the enemy for the rest of the activation.
+	var held := 0
+	while player.is_attacking() and held < 60:
+		player.position = Vector2(0, -24)
+		player.velocity = Vector2.ZERO
+		await get_tree().physics_frame
+		held += 1
+	check(not player.is_attacking() and not player.attack_hitbox.active, "activation ended and hitbox reset")
+	check(enemy.health.current == 2, "one activation damaged it only once (hp=%d)" % enemy.health.current)
+	# Hover clear of contact damage until the cooldown and the enemy's stagger pass.
+	for i in 25:
+		player.position = Vector2(0, -60)
+		player.velocity = Vector2.ZERO
+		await get_tree().physics_frame
+	player.position = Vector2(enemy.position.x, -24)
+	await down_strike(player, 4)
+	check(enemy.health.current == 1, "a new activation can hit again (hp=%d)" % enemy.health.current)
+
+
+func test_down_attack_on_ground_is_forward() -> void:
+	add_floor()
+	var player := spawn_player()
+	await frames(5)
+	await down_strike(player, 3)
+	check(player.attack_direction == Vector2(player.facing, 0), "grounded Down+Attack swings forward")
+	check(player.is_on_floor() and absf(player.position.y) < 1.0, "player stayed on the floor")
+
+
+func test_pogo_does_not_refund_air_dash() -> void:
+	add_floor()
+	spawn_passive_enemy(Vector2.ZERO).gravity = 0.0
+	var player := spawn_player(Vector2(0, -24))
+	player.dash_cooldown = 0.0
+	player._can_air_dash = false  # as if the air dash was already spent
+	var min_vy := await down_strike(player, 4)
+	check(min_vy < -200.0, "bounced (min vy=%.1f)" % min_vy)
+	await frames(6)
+	check(not player.is_on_floor(), "still airborne after the bounce")
+	press("dash")
+	await frames(2)
+	check(player.state != Player.State.DASH, "pogo did not refund the spent air dash")
+
+
+func test_hit_stop_restores_timing() -> void:
+	add_floor()
+	var player := spawn_player()
+	spawn_passive_enemy(Vector2(26, 0))
+	await frames(5)
+	check(Engine.time_scale == 1.0, "normal speed before the hit")
+	press("attack")
+	var stopped := false
+	for i in 6:
+		await get_tree().physics_frame
+		if GameState.is_hit_stopped():
+			stopped = true
+			break
+	release("attack")
+	check(stopped, "a landed hit starts hit-stop")
+	check(is_equal_approx(Engine.time_scale, player.hit_stop_time_scale),
+		"time slowed to %.2f (got %.2f)" % [player.hit_stop_time_scale, Engine.time_scale])
+	var waited := 0
+	while GameState.is_hit_stopped() and waited < 60:
+		await get_tree().physics_frame
+		waited += 1
+	var expected := ceili(player.hit_stop_duration * 60.0)
+	check(Engine.time_scale == 1.0, "time scale restored")
+	check(absi(waited - expected) <= 2, "hit-stop lasted ~%d frames (got %d)" % [expected, waited])
+
+
+func test_hit_stop_cleared_by_pause_and_reload() -> void:
+	# Overlapping requests take the longest remaining duration; they never add up.
+	GameState.hit_stop(0.05, 0.1)
+	GameState.hit_stop(0.05, 0.1)
+	await frames(6)
+	check(Engine.time_scale == 1.0, "overlapping hit-stops don't stack")
+	GameState.hit_stop(0.0, 0.1)
+	check(Engine.time_scale == 1.0, "zero duration is a no-op")
+	# Expires even while the tree is paused.
+	get_tree().paused = true
+	GameState.hit_stop(0.05, 0.1)
+	for i in 6:
+		await get_tree().process_frame
+	check(Engine.time_scale == 1.0, "hit-stop expires while paused")
+	get_tree().paused = false
+	# A level (re)load always starts at normal speed.
+	GameState.hit_stop(30.0, 0.1)
+	var level: Level = CavernScene.instantiate()
+	_arena.add_child(level)
+	check(Engine.time_scale == 1.0 and not GameState.is_hit_stopped(), "level load clears hit-stop")
+	await frames(3)
+	# Opening the pause menu cancels it.
+	GameState.hit_stop(30.0, 0.1)
+	var menu: PauseMenu = level.get_node("PauseMenu")
+	menu.open()
+	check(Engine.time_scale == 1.0 and not GameState.is_hit_stopped(), "pause clears hit-stop")
+	menu.close()
+	check(not get_tree().paused, "unpaused")
+	# Dying mid hit-stop leaves nothing stuck.
+	GameState.hit_stop(0.05, 0.1)
+	var hitbox := Hitbox.new()
+	hitbox.damage = 99
+	_arena.add_child(hitbox)
+	level.player.hurtbox.receive_hit(hitbox)
+	await frames(8)
+	check(level.player.state == Player.State.DEAD and Engine.time_scale == 1.0, "death leaves normal speed")
+	GameState.hit_stop(30.0, 0.1)
+	GameState.reset()
+	check(Engine.time_scale == 1.0, "reset clears hit-stop")
 
 
 func test_contact_damage_knockback_iframes() -> void:

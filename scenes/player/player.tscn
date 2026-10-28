@@ -6,6 +6,7 @@
 [ext_resource type="Script" path="res://scripts/components/hurtbox.gd" id="4_hurtbox"]
 [ext_resource type="Script" path="res://scripts/components/hitbox.gd" id="5_hitbox"]
 [ext_resource type="Script" path="res://scripts/components/game_camera.gd" id="6_camera"]
+[ext_resource type="PackedScene" path="res://scenes/effects/impact_burst.tscn" id="7_impact"]
 
 [sub_resource type="RectangleShape2D" id="RectangleShape2D_body"]
 size = Vector2(10, 22)
@@ -21,6 +22,7 @@ collision_layer = 2
 collision_mask = 65
 floor_snap_length = 4.0
 script = ExtResource("1_player")
+impact_effect = ExtResource("7_impact")
 
 [node name="CollisionShape2D" type="CollisionShape2D" parent="."]
 position = Vector2(0, -11)

@@ -59,7 +59,29 @@ func _draw() -> void:
 			draw_line(Vector2(-f * 10, y), Vector2(-f * 22, y), Color(FLAME, 0.5), 1.0)
 
 	if player.attack_visual_time > 0.0:
-		_draw_slash()
+		if player.attack_direction == Vector2.DOWN:
+			_draw_down_strike()
+		else:
+			_draw_slash()
+
+
+## Downward plunge: a flame-colored fan spreading down from the feet, so it
+## reads apart from the pale side/up slashes.
+func _draw_down_strike() -> void:
+	var progress := 1.0 - player.attack_visual_time / 0.15
+	var fade := 1.0 - progress * 0.7
+	var center := Vector2(0, player.attack_pivot.position.y + 5.0)
+	var a := PI / 2.0
+	var crescent := PackedVector2Array()
+	for i in 13:
+		var t := a + lerpf(-0.85, 0.85, i / 12.0)
+		crescent.append(center + Vector2.from_angle(t) * 22.0)
+	# The inner edge hugs the feet, so the plunge reads as attached to the Wick.
+	for i in range(12, -1, -1):
+		var t := a + lerpf(-0.45, 0.45, i / 12.0)
+		crescent.append(center + Vector2.from_angle(t) * 4.0)
+	draw_colored_polygon(crescent, Color(FLAME, 0.8 * fade))
+	draw_arc(center, 22.0, a - 0.85, a + 0.85, 13, Color(FLAME_CORE, fade), 2.0)
 
 
 func _draw_slash() -> void:

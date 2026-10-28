@@ -38,10 +38,20 @@ const SAFE_FOOT_OFFSET := 6.0
 @export var hurt_stun_time := 0.3
 @export var hazard_freeze_time := 0.45
 @export var invulnerability_time := 1.0
+## Hit-stop on a successful melee hit: real seconds, and the time scale held meanwhile.
+@export var hit_stop_duration := 0.06
+@export var hit_stop_time_scale := 0.05
+@export var impact_effect: PackedScene
+@export_group("Down Strike")
+## Upward speed after a down strike connects. Fixed height: releasing jump doesn't cut it.
+@export var pogo_bounce_speed := 340.0
+## How far the down strike's hitbox sits below the side/up attack pivot. Extra
+## reach lets a strike made mid-fall connect before the body meets contact damage.
+@export var down_strike_offset := 8.0
 
 var state := State.NORMAL
 var facing := 1
-## Direction of the current/last attack: Vector2.RIGHT/LEFT/UP. Read by the visual.
+## Direction of the current/last attack: Vector2.RIGHT/LEFT/UP/DOWN. Read by the visual.
 var attack_direction := Vector2.RIGHT
 var attack_visual_time := 0.0
 
@@ -54,6 +64,8 @@ var _dash_cooldown_timer := 0.0
 var _can_air_dash := true
 var _attack_timer := 0.0
 var _attack_cooldown_timer := 0.0
+var _can_pogo := false  # one bounce per down-strike activation
+var _pivot_origin := Vector2.ZERO
 var _hurt_timer := 0.0
 var _invuln_timer := 0.0
 var _hazard_respawn_pending := false
@@ -64,6 +76,7 @@ var _grounded_time := 0.0
 @onready var hurtbox: Hurtbox = $Hurtbox
 @onready var attack_pivot: Node2D = $AttackPivot
 @onready var attack_hitbox: Hitbox = $AttackPivot/AttackHitbox
+@onready var attack_shape: CollisionShape2D = $AttackPivot/AttackHitbox/CollisionShape2D
 @onready var camera: GameCamera = $Camera
 
 
@@ -73,6 +86,7 @@ func _ready() -> void:
 	health.died.connect(_on_died)
 	attack_hitbox.hit_landed.connect(_on_attack_landed)
 	attack_hitbox.active = false
+	_pivot_origin = attack_pivot.position
 	_safe_position = global_position
 
 
@@ -119,7 +133,7 @@ func _tick_timers(delta: float) -> void:
 	if _attack_timer > 0.0:
 		_attack_timer -= delta
 		if _attack_timer <= 0.0:
-			attack_hitbox.active = false
+			_end_attack()
 
 
 func _process_normal(delta: float) -> void:
@@ -156,7 +170,7 @@ func _process_normal(delta: float) -> void:
 			and (on_floor or _can_air_dash):
 		_start_dash(input_x)
 	elif Input.is_action_just_pressed("attack") and _attack_cooldown_timer <= 0.0:
-		_start_attack()
+		_start_attack(on_floor)
 
 
 func _process_dash() -> void:
@@ -222,26 +236,62 @@ func _start_dash(input_x: float) -> void:
 	_dash_cooldown_timer = dash_cooldown
 
 
-func _start_attack() -> void:
+## Up aims up; Down aims down only in the air (on the ground it would just hit the floor).
+func _start_attack(on_floor: bool) -> void:
+	attack_pivot.position = _pivot_origin
 	if Input.is_action_pressed("move_up"):
 		attack_direction = Vector2.UP
 		attack_pivot.scale = Vector2.ONE
 		attack_pivot.rotation = -PI / 2.0
+	elif Input.is_action_pressed("move_down") and not on_floor:
+		attack_direction = Vector2.DOWN
+		attack_pivot.scale = Vector2.ONE
+		attack_pivot.rotation = PI / 2.0
+		attack_pivot.position.y += down_strike_offset
 	else:
 		attack_direction = Vector2(facing, 0.0)
 		attack_pivot.scale = Vector2(facing, 1.0)
 		attack_pivot.rotation = 0.0
 	attack_hitbox.knockback_direction = attack_direction
 	attack_hitbox.active = true
+	_can_pogo = attack_direction == Vector2.DOWN
 	_attack_timer = attack_active_time
 	_attack_cooldown_timer = attack_cooldown
 	attack_visual_time = 0.15
 
 
-func _on_attack_landed(_target: Hurtbox) -> void:
+func _end_attack() -> void:
+	_attack_timer = 0.0
+	_can_pogo = false
+	attack_hitbox.active = false
+
+
+func _on_attack_landed(target: Hurtbox) -> void:
 	camera.shake(2.0, 0.1)
+	GameState.hit_stop(hit_stop_duration, hit_stop_time_scale)
+	_spawn_impact(target)
 	if attack_direction.x != 0.0:
 		velocity.x = -attack_direction.x * attack_recoil
+	elif _can_pogo:
+		# Bounce off whatever the down strike hit. The air dash is not refunded,
+		# so pogoing can't chain into extra air mobility.
+		_can_pogo = false
+		velocity.y = -pogo_bounce_speed
+		_is_jumping = false
+
+
+func _spawn_impact(target: Hurtbox) -> void:
+	if impact_effect == null or get_parent() == null:
+		return
+	var target_center := target.global_position
+	for child in target.get_children():
+		if child is CollisionShape2D:
+			target_center = (child as Node2D).global_position
+			break
+	var burst: ImpactBurst = impact_effect.instantiate()
+	burst.direction = attack_direction
+	get_parent().add_child(burst)
+	burst.global_position = attack_shape.global_position.lerp(target_center, 0.6)
 
 
 func _on_hit_received(hitbox: Hitbox) -> void:
@@ -250,8 +300,7 @@ func _on_hit_received(hitbox: Hitbox) -> void:
 	health.take_damage(hitbox.damage)
 	_invuln_timer = invulnerability_time
 	hurtbox.invulnerable = true
-	_attack_timer = 0.0
-	attack_hitbox.active = false
+	_end_attack()
 	camera.shake(5.0, 0.25)
 	if health.is_dead():
 		return  # _on_died already switched state

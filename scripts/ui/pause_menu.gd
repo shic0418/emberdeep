@@ -26,6 +26,7 @@ func _unhandled_input(event: InputEvent) -> void:
 
 func open() -> void:
 	visible = true
+	GameState.cancel_hit_stop()
 	get_tree().paused = true
 	resume_button.grab_focus()
 

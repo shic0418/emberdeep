@@ -34,6 +34,7 @@ The game starts directly in the playable level.
 | Move | A / D or ← / → | Left stick / D-pad |
 | Jump (hold for higher) | Space or Z | A / Cross |
 | Attack (hold Up for an upward strike) | J or X | X / Square |
+| Downward strike (in the air; bounces off enemies) | Down + Attack | Down + X |
 | Dash (once per jump in the air) | K, C or Shift | RB / R1 |
 | Drop through a stone slab | Down + Jump | Down + A |
 | Pause | Esc or P | Start |
